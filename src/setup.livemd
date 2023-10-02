@@ -1,0 +1,218 @@
+# Untitled notebook
+
+```elixir
+Mix.install(
+  [
+    {:kino, "~> 0.10.0"},
+    {:evision, "~> 0.1.33"},
+    {:axon, "~> 0.6.0"},
+    {:table_rex, "~> 3.1.1"},
+    {:axon_onnx, "~> 0.4.0"},
+    {:nx, "~> 0.6.1"},
+    {:exla, "~> 0.6.1"},
+    {:stb_image, "~> 0.6.3"},
+    {:flow, "~> 1.2.4"}
+  ],
+  config: [
+    nx: [
+      default_backend: EXLA.Backend,
+      default_defn_options: [compiler: EXLA]
+    ]
+  ]
+  # system_env: %{"XLA_TARGET" => "cuda118"}
+)
+```
+
+## Section
+
+```elixir
+File.cd!(__DIR__)
+```
+
+```elixir
+img_dir = ~c"../Plant segmentation/images/"
+mask_dir = ~c"../Plant segmentation/masks/"
+```
+
+```elixir
+defmodule RandomFile do
+  def get_random_file_names(folder_path) do
+    folder_path
+    |> File.ls!()
+    |> Enum.shuffle()
+    |> Enum.take(1)
+  end
+end
+
+random_files = RandomFile.get_random_file_names(img_dir)
+IO.inspect(random_files)
+```
+
+```elixir
+images = File.ls!(img_dir)
+masks = File.ls!(mask_dir)
+IO.puts("Number of images: #{length(images)}")
+IO.puts("Number of masks: #{length(masks)}")
+
+file = RandomFile.get_random_file_names(img_dir)
+IO.puts("#{img_dir}#{file}")
+img = File.read!("#{img_dir}#{file}")
+mask = File.read!("#{mask_dir}#{file}")
+Kino.Layout.grid([img, mask], columns: 2)
+```
+
+```elixir
+defmodule FolderCheck do
+  def create_folders do
+    create_folder("./Images/")
+    create_folder("./Masks/")
+  end
+
+  def create_folders_v2 do
+    create_folder("./Plant/")
+    create_folder("./Plant/Data/")
+    create_folder("./Plant/Data/train_images/")
+    create_folder("./Plant/Data/train_masks/")
+    create_folder("./Plant/Data/val_images/")
+    create_folder("./Plant/Data/val_masks/")
+    create_folder("./Plant/Data/train_images/train/")
+    create_folder("./Plant/Data/train_masks/train/")
+    create_folder("./Plant/Data/val_images/val/")
+    create_folder("./Plant/Data/val_masks/val/")
+  end
+
+  defp create_folder(folder_path) do
+    if !File.exists?(folder_path) do
+      File.mkdir!(folder_path)
+    end
+  end
+end
+
+FolderCheck.create_folders()
+```
+
+```elixir
+defmodule Patchify do
+  def write(input_file, out_file, count) do
+    if Path.extname(input_file) == ".png" do
+      imgs = read_and_patch(input_file)
+
+      Enum.map(0..(length(imgs) - 1), fn x ->
+        img =
+          Enum.at(imgs, x)
+          |> Evision.Mat.from_nx_2d()
+
+        Evision.imwrite("./#{out_file}/#{x + count * length(imgs)}.png", img)
+      end)
+    end
+  end
+
+  defp read_and_patch(input_file) do
+    div_size = 128
+
+    Evision.imread(input_file)
+    |> Evision.Mat.to_nx()
+    |> Nx.to_batched(div_size)
+    |> Enum.map(&Nx.transpose(&1, axes: [1, 0, 2]))
+    |> Enum.flat_map(&Nx.to_batched(&1, div_size))
+    |> Enum.map(&Nx.transpose(&1, axes: [1, 0, 2]))
+  end
+end
+```
+
+```elixir
+list =
+  File.ls!(img_dir)
+
+Enum.map(0..(length(list) - 1), fn x ->
+  img_name = Enum.at(list, x)
+  Patchify.write("#{img_dir}#{img_name}", "Images", x)
+  Patchify.write("#{mask_dir}#{img_name}", "Masks", x)
+end)
+```
+
+```elixir
+img_dir = ~c"./Images/"
+mask_dir = ~c"./Masks/"
+images = File.ls!(img_dir)
+masks = File.ls!(mask_dir)
+IO.puts("Number of images: #{length(images)}")
+IO.puts("Number of masks: #{length(masks)}")
+```
+
+```elixir
+img_dir = ~c"./Images/"
+mask_dir = ~c"./Masks/"
+images = File.ls!(img_dir)
+
+Enum.map(images, fn x ->
+  {:ok, file_info} = File.stat("#{img_dir}#{x}")
+  file_size_in_bytes = file_info.size
+
+  if file_size_in_bytes <= 10000 do
+    File.rm("#{img_dir}#{x}")
+    File.rm("#{mask_dir}#{x}")
+  end
+end)
+```
+
+```elixir
+img_dir = ~c"./Images/"
+mask_dir = ~c"./Masks/"
+images = File.ls!(img_dir)
+masks = File.ls!(mask_dir)
+IO.puts("Number of images: #{length(images)}")
+IO.puts("Number of masks: #{length(masks)}")
+```
+
+```elixir
+file = RandomFile.get_random_file_names(img_dir)
+IO.puts("#{img_dir}#{file}")
+img = File.read!("#{img_dir}#{file}")
+mask = File.read!("#{mask_dir}#{file}")
+Kino.Layout.grid([img, mask], columns: 2)
+```
+
+```elixir
+FolderCheck.create_folders_v2()
+```
+
+```elixir
+defmodule Split do
+  def split_data(images, masks, test_ratio) do
+    total_length = length(images)
+    test_size = trunc(total_length * test_ratio)
+
+    {shuffled_images, shuffled_masks} = Enum.zip(images, masks) |> Enum.shuffle() |> Enum.unzip()
+
+    test_images = Enum.take(shuffled_images, test_size)
+    test_masks = Enum.take(shuffled_masks, test_size)
+    train_images = Enum.drop(shuffled_images, test_size)
+    train_masks = Enum.drop(shuffled_masks, test_size)
+
+    {train_images, test_images, train_masks, test_masks}
+  end
+end
+
+img_dir = ~c"./Images/"
+mask_dir = ~c"./Masks/"
+images = File.ls!(img_dir)
+masks = File.ls!(mask_dir)
+{train_images, test_images, train_masks, test_masks} = Split.split_data(images, masks, 0.2)
+
+IO.inspect(length(train_images))
+IO.inspect(length(train_masks))
+IO.inspect(length(test_images))
+IO.inspect(length(test_masks))
+
+file = Enum.take(train_images, 1)
+IO.puts("#{img_dir}#{file}")
+img = File.read!("#{img_dir}#{file}")
+mask = File.read!("#{mask_dir}#{file}")
+
+Kino.Layout.grid([img, mask], columns: 2)
+```
+
+```elixir
+Kino.Image.new(img, :png)
+```

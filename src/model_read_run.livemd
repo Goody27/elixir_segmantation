@@ -1,0 +1,147 @@
+# Untitled notebook
+
+```elixir
+Mix.install(
+  [
+    {:kino, "~> 0.10.0"},
+    {:evision, "~> 0.1.33"},
+    {:axon, "~> 0.6.0"},
+    {:table_rex, "~> 3.1.1"},
+    {:axon_onnx, "~> 0.4.0"},
+    {:nx, "~> 0.6.1"},
+    {:exla, "~> 0.6.1"},
+    {:stb_image, "~> 0.6.3"},
+    {:flow, "~> 1.2.4"}
+  ],
+  config: [
+    nx: [
+      default_backend: EXLA.Backend,
+      default_defn_options: [compiler: EXLA]
+    ]
+  ]
+  # system_env: %{"XLA_TARGET" => "cuda118"}
+)
+```
+
+## Section
+
+```elixir
+defmodule Split do
+  # データの分割関数の定義
+  def split_data(images, masks, test_ratio) do
+    total_length = length(images)
+    test_size = trunc(total_length * test_ratio)
+
+    # データをシャッフル
+    {shuffled_images, shuffled_masks} = Enum.zip(images, masks) |> Enum.shuffle() |> Enum.unzip()
+
+    # テストデータとトレーニングデータの分割
+    test_images = Enum.take(shuffled_images, test_size)
+    test_masks = Enum.take(shuffled_masks, test_size)
+    train_images = Enum.drop(shuffled_images, test_size)
+    train_masks = Enum.drop(shuffled_masks, test_size)
+
+    {train_images, test_images, train_masks, test_masks}
+  end
+end
+
+File.cd!(__DIR__)
+img_dir = ~c"./Images/"
+mask_dir = ~c"./Masks/"
+images = File.ls!(img_dir)
+masks = File.ls!(mask_dir)
+# データ分割の呼び出し
+{train_images, test_images, train_masks, test_masks} = Split.split_data(images, masks, 0.2)
+
+# データ数の出力
+IO.inspect(length(train_images))
+IO.inspect(length(train_masks))
+IO.inspect(length(test_images))
+IO.inspect(length(test_masks))
+
+file = Enum.take(train_images, 1)
+IO.puts("#{img_dir}#{file}")
+img = File.read!("#{img_dir}#{file}")
+mask = File.read!("#{mask_dir}#{file}")
+
+Kino.Layout.grid([img, mask], columns: 2)
+```
+
+```elixir
+defmodule Image do
+  def to_nx(img_names, path) do
+    img_names =
+      img_names
+      |> Enum.take(100)
+      |> Enum.map(&Path.join(path, &1))
+      |> Enum.filter(&(Path.extname(&1) == ".png"))
+      |> Enum.to_list()
+
+    img_names
+    |> Flow.from_enumerable(min_demand: 1)
+    |> Flow.map(fn name ->
+      File.read!(name)
+      |> StbImage.read_binary!()
+      |> StbImage.to_nx()
+    end)
+    |> Enum.to_list()
+    |> Nx.concatenate()
+    |> Nx.as_type(:u8)
+    |> Nx.divide(255)
+    |> Nx.reshape({Enum.count(img_names), 128, 128, 3})
+  end
+end
+```
+
+```elixir
+defmodule Change do
+  def to_integer(list) do
+    list
+    |> Enum.map(fn x ->
+      Enum.map(x, fn y ->
+        Enum.map(y, fn z -> trunc(z) end)
+      end)
+    end)
+  end
+end
+```
+
+```elixir
+test_images =
+  test_images
+  |> Image.to_nx("./Images")
+```
+
+```elixir
+File.cd!(__DIR__)
+first_models = File.read!("./gpu_batch8_epochs5.axon")
+{model, params} = Axon.deserialize(first_models)
+```
+
+```elixir
+num = :rand.uniform(100)
+
+test_img1 =
+  test_images[num]
+  |> Nx.multiply(255)
+  |> Nx.to_list()
+  |> Change.to_integer()
+  |> Nx.tensor(type: :u8)
+  |> StbImage.from_nx()
+
+test_img =
+  test_images[num]
+  |> Nx.new_axis(0)
+
+pre_img =
+  Axon.predict(model, params, test_img)
+  |> Nx.squeeze(axes: [0])
+  |> Nx.multiply(255)
+  |> Nx.to_list()
+  |> Change.to_integer()
+  |> Nx.tensor(type: :u8)
+  |> StbImage.from_nx()
+
+# #Kino.Layout.grid([pre_img, test_mask_img], columns: 2)
+Kino.Layout.grid([test_img1, pre_img], columns: 2)
+```
